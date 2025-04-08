@@ -31,6 +31,8 @@ fn huff_encode(str: &str) -> (String, String) {
     let mut forest: Vec<BinaryTree<(char, u8)>> = Vec::new();
 
     freqvec.sort_by_key(|(_, k)| *k);
+    freqvec.reverse();
+
     for freqi in freqvec {
         let mut ft = BinaryTree::new();
         ft.insert(freqi);
@@ -65,26 +67,46 @@ fn huff_encode(str: &str) -> (String, String) {
     let mut enc_mapper = (String::new(), String::new());
     let mut enc_consec = 0;
 
+
     let mut shft: Vec<(&char, &str)> = huffmap.iter().map(|(k, v)| (k, v.as_str())).collect();
     shft.sort_by_key(|(_, k)| k.len());
 
+    let empty_chain: &str = "0;";
 
-    for i in 0..shft.len(){
+    let iend = shft.len() - 1;
+    for i in 0..shft.len() {
         let (k,v) = shft.get(i).unwrap();
-
-        enc_mapper.1.push(**k);
-
-        if i == 0 || v.len() == shft.get(i-1).unwrap().1.len() {
-            enc_consec += 1;
-        } else {
-            enc_mapper.0.push_str(enc_consec.to_string().as_str());
-            if i == shft.len() - 1 {
-                enc_mapper.0.push('$');
-            } else {
-                enc_mapper.0.push(';');
+        match &i {
+            0 => {
+                enc_mapper.0.push_str(empty_chain.repeat(*v.len() - 1));
             }
-            enc_consec = 0;
+
+            iend => {
+                enc_mapper.
+            }
+
+            _ => {
+
+
+                enc_mapper.1.push(**k);
+
+                if i == 0 || v.len() == shft.get(i-1).unwrap().1.len() {
+                    enc_consec += 1;
+                } else {
+                    enc_mapper.0.push_str(enc_consec.to_string().as_str());
+                    if i == shft.len() - 1 {
+                        enc_mapper.0.push('$');
+                    } else {
+                        enc_mapper.0.push(';');
+                    }
+                    enc_consec = 0;
+                }
+            }
+
         }
+
+
+
     }
 
     enc_mapper.0.push_str(&*enc_mapper.1);
@@ -106,26 +128,32 @@ fn huff_decode(str: &str, mappak: &str) -> String {
 
     // Unpack mapper
     let mut mapper: BTreeMap<&str, &char> = BTreeMap::default();
-    let (values, keys): (&mut Vec<u32>, Vec<char>) = {
+    let (values, keys): (Vec<u32>, Vec<char>) = {
         let delim = pak_cpy.binary_search(&'$').unwrap();
         (pak_cpy.drain(0..delim).map(|v| v.to_digit(10).unwrap()).collect(), pak_cpy.drain(1..dec_str.len()).collect())
     };
 
-    let mut code_len = 1u32;
+    let mut code_len = 1usize;
     let mut code = 0u32;
 
+    let mut mappings: Vec<(String, char)> = Vec::new();
     for k in keys {
         let canon_code = if values.get(code_len).unwrap() == &0 {
             code_len += 1;
-            &huff_canonize(&code_len, &(code_len - 1), &mut code)
+            huff_canonize(&code_len, &(code_len - 1), &mut code)
         } else {
-            &huff_canonize(&code_len, &code_len, &mut code)
+            huff_canonize(&code_len, &code_len, &mut code)
         };
 
-        *values.get(code_len) -= 1;
+        let mut chain = *values.get(code_len).unwrap();
+        chain -= 1;
 
-        mapper.insert(canon_code, &k);
+        mappings.push((canon_code, k));
     }
+
+    mappings.iter().for_each(|&(ref k, ref v)| { mapper.insert(&*k, &v); } );
+
+
 
     // Map string.
     let mut buf = String::new();
@@ -133,15 +161,15 @@ fn huff_decode(str: &str, mappak: &str) -> String {
     while !str_cpy.is_empty() {
         buf.push(str_cpy.pop().unwrap());
 
-        if let mapping = mapper.get(&buf) {
-            dec_str.push(**mapping);
+        if let mapping = mapper.get(&buf as &str) {
+            dec_str.push(**mapping.unwrap());
         }
     }
 
     dec_str
 }
 
-fn huff_canonize(curr_len: &u32, prev_len: &u32, code: &mut u32) -> String {
+fn huff_canonize(curr_len: &usize, prev_len: &usize, code: &mut u32) -> String {
     *code <<= *curr_len - *prev_len;
     let curr_code = *code;
     *code += 1;
@@ -165,7 +193,7 @@ fn merge_forest(forest: &mut Vec<BinaryTree<(char, u8)>>) {
         // ...whoops
         let (mut uno, mut dos) = (forest.remove(forest.len() - 1), forest.remove(forest.len() - 1));
         let merged_weight = uno.val().unwrap().1 + dos.val().unwrap().1;
-        let merged_tree = BinaryTree::from_all((' ', merged_weight), uno, dos);
+        let merged_tree = BinaryTree::from_all(('\0', merged_weight), uno, dos);
 
         let pos = forest.partition_point(|t| t.val().unwrap().1 > merged_weight);
         forest.insert(pos, merged_tree);
