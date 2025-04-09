@@ -4,6 +4,7 @@ use alloc::boxed::Box;
 use core::cmp::Ordering;
 use core::cmp::max;
 use alloc::collections::BTreeMap;
+use alloc::vec::Vec;
 
 #[derive(Debug)]
 struct Node<T: Ord> {
