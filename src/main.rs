@@ -3,6 +3,7 @@
 extern crate alloc;
 
 mod binary_tree;
+mod lcd1602;
 
 use arduino_hal::prelude::*;
 use arduino_hal::spi;
