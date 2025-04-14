@@ -1,32 +1,46 @@
 use crate::ASCII_TO_HD44780;
+use alloc::rc::Rc;
+use alloc::string::String;
 use alloc::vec::Vec;
-use arduino_hal::hal::port::Dynamic;
-use arduino_hal::port::mode::Output;
+use arduino_hal::hal::port::{Dynamic, PE0, PE1};
+use arduino_hal::port::mode::{Input, Output};
 use arduino_hal::port::Pin;
+use arduino_hal::Usart;
+use avr_device::atmega2560::USART0;
+use core::cell::RefCell;
 use core::ops::RangeBounds;
+use arduino_hal::prelude::_unwrap_infallible_UnwrapInfallible;
 use embedded_hal::digital::{OutputPin, PinState};
 
 // Adapted from https://www.waveshare.com/datasheet/LCD_en_PDF/LCD1602.pdf, https://cdn.sparkfun.com/assets/9/5/f/7/b/HD44780.pdf
 
-
 pub struct Lcd1602 {
-    rs: Pin<Output>,
-    rw: Pin<Output>,
+    pub(crate) rs: Pin<Output>,
+    pub(crate) rw: Pin<Output>,
     en: Pin<Output>,
-    db: [Pin<Output>; 8] ,// ← NOTE... little endian (0-7)
+    db: [Pin<Output>; 8],// ← NOTE... little endian (0-7)
+    pub(crate) serial: Usart<USART0, Pin<Input, PE0>, Pin<Output, PE1>>
 }
 
 impl Lcd1602 {
-    pub fn new(rs: Pin<Output>, rw: Pin<Output>, en: Pin<Output>, db: [Pin<Output>; 8]) -> Lcd1602 {
-        Self { rs, rw, en, db }
+    pub fn new(rs: Pin<Output>, rw: Pin<Output>, en: Pin<Output>, db: [Pin<Output>; 8], serial: Usart<USART0, Pin<Input, PE0>, Pin<Output, PE1>>) -> Lcd1602 {
+        Self { rs, rw, en, db, serial }
     }
 
     pub fn register(&mut self, mut byte: u8) { // ← write to DB register
+        ufmt::uwriteln!(&mut self.serial, "REGISTERING {:?}", bits8(byte));
         for i in 0..8 {
             let dbi = &mut self.db[i];
             dbi.set_state(PinState::from(byte & 0x1 == 1)).expect("Could not set register pin state");
             byte >>= 1;
+          //  ufmt::uwriteln!(&mut self.serial, "REGUPD {:?}", bits8(byte));
         }
+    }
+
+    pub fn check(&mut self) {
+        let binding = self.db.iter().map(|p| u8::from(p.is_set_high())).rev().collect::<Vec<_>>();
+        let ps: &[u8] = binding.as_slice();
+        ufmt::uwriteln!(&mut self.serial, "CHK... {} {} / {:?}\n", u8::from(self.rs.is_set_high()), u8::from(self.rw.is_set_high()), ps);
     }
 
     pub fn dbx<R: RangeBounds<usize> + core::slice::SliceIndex<[Pin<Output, Dynamic>], Output = [Pin<Output, Dynamic>]>>(&mut self, i: R) -> u8 { // ← utility for bitmasking ith register value. Range to save accesses if several needed.
@@ -50,18 +64,28 @@ impl Lcd1602 {
         arduino_hal::delay_us(1);
         self.en.set_low();
         arduino_hal::delay_us(1);
+        ufmt::uwriteln!(&mut self.serial, "ENP");
     }
 
     pub fn enp_then_bus(&mut self) {
         self.enp();
+        arduino_hal::delay_us(300);
         self.bus();
     }
 
     pub fn cmd(&mut self, reg: &u16) { // ← the "skip pleasantries and go for it" option
+        self.cmb(reg);
+        self.bus();
+        self.check();
+    }
+
+    pub fn cmb(&mut self, reg: &u16) { // cmd with no busing
+        ufmt::uwriteln!(&mut self.serial, "CMD {} {} / {:?}", (reg >> 9) & 0b1u16, (reg >> 8) & 0b1u16, bits8((reg & 0xFF) as u8));
         self.register((reg & 0b00_1111_1111) as u8);
         self.rw.set_state(PinState::from((reg & 0b01_0000_0000) != 0)).expect("Could not set register pin state");
         self.rs.set_state(PinState::from((reg & 0b10_0000_0000) != 0)).expect("Could not set register pin state");
-        self.enp_then_bus();
+        self.enp();
+        self.check();
     }
 
     pub fn rdb(&mut self) -> bool { // ← Read B(usy) flag
@@ -69,7 +93,7 @@ impl Lcd1602 {
         self.rw.set_high();
         self.enp();
 
-        self.db[4].is_set_high()
+        self.db[7].is_set_high()
     }
 
     pub fn clr(&mut self) { // ← screen clear
@@ -137,9 +161,20 @@ impl Lcd1602 {
     }
 
     pub fn init(&mut self) {
-        self.fns(true, false, false); // 00 0011 00**
-        self.dsw(true, true, true);   // 00 0000 1110
-        self.ems(true, false); // 00 0000 0110
+        // See Figure 23 of Hitachi HD44780U datasheet; manual initialisation
+        arduino_hal::delay_ms(150);
+        self.cmb(&0b00_0011_0000);
+        arduino_hal::delay_ms(10);
+        self.cmb(&0b00_0011_0000);
+        arduino_hal::delay_us(150);
+        self.cmb(&0b00_0011_0000);
+        arduino_hal::delay_us(150);
+        self.cmd(&0b00_0011_1000); // DL=8D, N=2R, F=5x7
+        self.cmd(&0b00_0000_1000); // Display off
+        self.cmd(&0b00_0000_0001); // Display clear
+        self.cmd(&0b00_0000_0111); // I/D=inc, S=shift
+
+        ufmt::uwriteln!(&mut self.serial, "\n\nInitialised.\n\n");
     }
 
 
@@ -161,4 +196,12 @@ impl Lcd1602 {
             // TODO: need to change lines?
         }
     }
+}
+
+pub fn bits8(byte: u8) -> [u8; 8] { // big-endian (8-0)
+    [byte >> 7 & 0x1, byte >> 6 & 0x1, byte >> 5 & 0x1, byte >> 4 & 0x1, byte >> 3 & 0x1, byte >> 2 & 0x1, byte >> 1 & 0x1, byte & 0x1]
+}
+
+pub fn bits16(num: u16) -> [u8; 16] {
+    [(num >> 15 & 0x1) as u8, (num >> 14 & 0x1) as u8, (num >> 13 & 0x1) as u8, (num >> 12 & 0x1) as u8, (num >> 11 & 0x1) as u8, (num >> 10 & 0x1) as u8, (num >> 9 & 0x1) as u8, (num >> 8 & 0x1) as u8, (num >> 7 & 0x1) as u8, (num >> 6 & 0x1) as u8, (num >> 5 & 0x1) as u8, (num >> 4 & 0x1) as u8, (num >> 3 & 0x1) as u8, (num >> 2 & 0x1) as u8, (num >> 1 & 0x1) as u8, (num & 0x1) as u8]
 }
