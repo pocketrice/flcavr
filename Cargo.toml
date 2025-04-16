@@ -1,33 +1,32 @@
 [package]
-name = "flcavr"
+name = "flcavr2"
 version = "0.1.0"
 authors = ["Lucas Xie <79682953+pocketrice@users.noreply.github.com>"]
 edition = "2021"
 license = "MIT OR Apache-2.0"
 
 [[bin]]
-name = "flcavr"
+name = "flcavr2"
 test = false
 bench = false
 
 [dependencies]
 panic-halt = "1.0.0"
 ufmt = "0.2.0"
-nb = "1.1.0"
+#nb = "1.1.0"
 embedded-hal = "1.0"
-lcd-lcm1602-i2c = "0.3.0"
-heapless = "0.8.0"
+embedded-alloc = "0.6.0"
+avr-device = { version = "0.7.0", features = ["critical-section-impl"]}
+fchashmap = "0.1.3"
+
+#[build-dependencies]
+#phf = { version = "0.11.3", default-features = false }
+#phf_codegen = "0.11.3"
 
 [dependencies.arduino-hal]
 git = "https://github.com/rahix/avr-hal"
-rev = "3c089795cadbbc7fa83f45958128689fee7ba1e4"
+rev = "fafaf587a32a4500239fd073f89d1b9c36b48092"
 features = ["arduino-mega2560"]
-
-# The latest releases of `proc-macro2` do not support the rust toolchain that
-# we use.  Thus, we must fix this dependency to an older version where our
-# toolchain is still supported.  See https://github.com/Rahix/avr-hal/issues/537
-[build-dependencies.proc-macro2]
-version = "=1.0.79"
 
 # Configure the build for minimal size - AVRs have very little program memory
 [profile.dev]

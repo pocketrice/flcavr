@@ -2,103 +2,100 @@
 #![no_main]
 extern crate alloc;
 
-mod binary_tree;
 mod lcd1602;
+mod dijkstra;
 
-use arduino_hal::prelude::*;
-use arduino_hal::spi;
-use heapless::{String, Vec, FnvIndexMap, BinaryHeap, IndexMap};
+use alloc::format;
+use crate::lcd1602::Lcd1602;
+use arduino_hal::port::mode::Output;
+use arduino_hal::port::Pin;
+use arduino_hal::prelude::_unwrap_infallible_UnwrapInfallible;
+use embedded_alloc::LlffHeap as Heap;
+use embedded_hal::digital::OutputPin;
 use panic_halt as _;
-use crate::binary_tree::BinaryTree;
 
-#[repr(C)] #[derive(Debug)]
-struct PreEntry {
-    room: u8,
-    time: u16,
-    flags: u8,
-    desc: String<252>
-}
+#[global_allocator]
+static HEAP: Heap = Heap::empty();
 
-#[repr(C)] #[derive(Debug)]
-struct PostEntry {
-    room: u8,
-    prio: u8,
-    eid: u8,
-    oid: String<2>,
-    status: u8,
-    days: u16
-}
+//include!(concat!(env!("OUT_DIR"), "/codegen.rs"));
 
 #[arduino_hal::entry]
 fn main() -> ! {
+    // Initialise allocator (ripped from https://crates.io/crates/embedded-alloc/0.6.0)
+    use core::mem::MaybeUninit;
+    const HEAP_SIZE: usize = 1024;
+    static mut HEAP_MEM: [MaybeUninit<u8>; HEAP_SIZE] = [MaybeUninit::uninit(); HEAP_SIZE];
+    unsafe { HEAP.init(HEAP_MEM.as_ptr() as usize, HEAP_SIZE) }
+
     let dp = arduino_hal::Peripherals::take().unwrap();
     let pins = arduino_hal::pins!(dp);
-
-    // 256-byte preseg (0x00 = room # via dict, 0x01-0x02 = time in sec, 0x03 = ↴, 0x04-0xFF = 252-byte description in Huffman-encoded ASCII
-    //                                                            (keep warm, keep cold, fragile/mix/spill, add utensils, allergen-prone, [3] raw priority)
-
-    // 8-byte postseg (0x00 = room # via dict, 0x01 = priority, 0x02 = NID, 0x03-0x07 = ↴
-    //                                                                                ([2] ASCII OID, [1] status, [2] days since 1/1/25)
-
-    // You should write presegs to 3+1kb EEPROM (up to 12 entries), then write postsegs after every delivery to 6kb+2k SRAM (up to 768 entries → 6 buffer)
-    let mut preseqs: Vec<PreEntry, 12> = Vec::new();
-    let mut postseqs: Vec<PostEntry, 6> = Vec::new();
-
-    let pretest = PreEntry {
-        room: 0x36,
-        time: 0xB33F,
-        flags: 0b10001100,
-        desc: String::from("Send with chamomile and honey, do not forget tea".parse().unwrap())
-    };
-
-    preseqs.push(pretest).expect("TODO: panic message");
-
-
-    // Sort by distance/priority using Dijkstra
-
-    // TODO
-
-
-    // serial interface
     let mut serial = arduino_hal::default_serial!(dp, pins, 57600);
 
-    // SPI interface
-    let (mut spi, _) = arduino_hal::Spi::new(
-        dp.SPI,
-        pins.d52.into_output(),
-        pins.d51.into_output(),
-        pins.d50.into_pull_up_input(),
-        pins.d53.into_output(),
-        spi::Settings::default(),
-    );
+    /*
+     * For examples (and inspiration), head to
+     *
+     *     https://github.com/Rahix/avr-hal/tree/main/examples
+     *
+     * NOTE: Not all examples were ported to all boards!  There is a good chance though, that code
+     * for a different board can be adapted for yours.  The Arduino Uno currently has the most
+     * examples available.
+     */
 
-    loop {
-        // send byte
-        nb::block!(spi.send(0b00001111)).unwrap_infallible();
 
-        // MISO -> MOSI, read data is same?
-        let data = nb::block!(spi.read()).unwrap_infallible();
 
-        ufmt::uwriteln!(&mut serial, "data: {}\r", data).unwrap_infallible();
-        arduino_hal::delay_ms(1000);
+    let rs: Pin<Output> = pins.d10.into_output().downgrade();
+    let rw: Pin<Output> = pins.d11.into_output().downgrade();
+    let en: Pin<Output> = pins.d12.into_output().downgrade();
+
+    let db0: Pin<Output> = pins.d2.into_output().downgrade();
+    let db1: Pin<Output> = pins.d3.into_output().downgrade();
+    let db2: Pin<Output> = pins.d4.into_output().downgrade();
+    let db3: Pin<Output> = pins.d5.into_output().downgrade();
+    let db4: Pin<Output> = pins.d6.into_output().downgrade();
+    let db5: Pin<Output> = pins.d7.into_output().downgrade();
+    let db6: Pin<Output> = pins.d8.into_output().downgrade();
+    let db7: Pin<Output> = pins.d9.into_output().downgrade();
+
+    let mut lcd = Lcd1602::new(rs, rw, en, [db0, db1, db2, db3, db4, db5, db6, db7], serial);
+
+    lcd.init();
+    lcd.cmd(&0b00_0011_1000);
+    lcd.cmd(&0b00_0000_1100);
+    lcd.cmd(&0b00_0000_0110);
+    // lcd.disp_str("Ample chamomile and honey, omit lavender. B12 → C40. ▓▓▓ KEEP WARM, ALLERGEN ▓\
+    // ▓▓");
+
+
+    //lcd.disp_symv(vec![0b0011_0000, 0b0011_0001, 0b0011_1010, 0b0011_1000, 0b0011_0100]);
+
+    //lcd.disp_symv(vec![0b0111_0111u8, 0b0110_1111u8, 0b0111_1010u8, 0b1110_1111u8, 0b1111_1111u8, 0b1111_1010u8]);
+
+    let mut bomb = 300u16;
+    let mut blink = true;
+    while bomb > 0 {
+        lcd.clr();
+        lcd.disp_str(&*format!("{:02}", bomb / 60));
+
+        let blc = if blink { ':' } else { ' ' };
+        blink = !blink;
+        lcd.disp_char(blc);
+
+        lcd.disp_str(&*format!("{:02}", bomb % 60));
+
+        bomb -= 1;
+
+        arduino_hal::delay_ms(800);
     }
+
+    lcd.clr();
+    lcd.disp_str("HAPPY NEW YEAR");
+    lcd.marquee(400);
+
+   // lcd.marquee(600);
+    loop {
+        ufmt::uwriteln!(&mut lcd.serial, "OK...\r").unwrap_infallible();
+        arduino_hal::delay_ms(5000);
+    }
+
+    //lcd.disp_symv(vec![0b0100_1000, 0b0100_0001, 0b0101_0000, 0b0101_0000])
 }
-
-fn str2huffman(str: &str) -> &str {
-    let freqmap = str2freq(str);
-
-    let bt: BinaryTree<char> = BinaryTree::new();
-}
-
-fn str2freq(str: &str) -> FnvIndexMap<char, u8, 26> {
-    let mut freqmap = FnvIndexMap::<char, u8, 26>::new();
-
-    str.chars().for_each(|c| {
-        freqmap.insert(c, freqmap.get(&c).unwrap_or_else(0) + 1).expect("Freqmap update failure");
-    });
-
-    freqmap
-}
-
-
-
