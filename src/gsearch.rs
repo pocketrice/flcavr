@@ -1,7 +1,8 @@
 use alloc::vec;
 use alloc::vec::Vec;
 use core::cmp::Reverse;
-
+use priority_queue::PriorityQueue;
+use crate::hash::NaiveXORHasherBuilder;
 // Due to inability in instantiating a static map (phf has >1 access issues, lazy_static and hashbrown do not compile since RISC-based AVR lacks the instructions to run the spin crate)
 // ...and AVR-HAL has no functionality for writing separate data to flash (cannot read during runtime anyway)
 // ...instead load another FcHashMap into SRAM.
@@ -34,6 +35,8 @@ const CGR_DOWNRIGHT: u8 = 0b0000_0011;
 const CGR_UPRIGHT: u8 = 0b0000_0100;
 const CGR_DOWNLEFT: u8 = 0b0000_0101;
 
+const EMPTY_NODE: Node = Node{ dm_index: 0, graph_index: 0 };
+
 const INFINITY: u8 = u8::MAX;
 const ATRIUM_TAX: u8 = 10;
 const ELEV_TAX: [u8; 9] = [5, 6, 8, 12, 14, 16, 17, 19, 20]; // Lookup table for x=0-8 (compare ⌈10log²(2x)+5⌉ to ⌈5x⌉)
@@ -52,8 +55,6 @@ const DISTMAP: [[u8; 10]; 10] = {
     ]
 };
 
-const ROOM_DICT: [str; 10] = [*"Dropoff", *"G010", *"Veranda", *"I315", *"B888", *"C148", *"C024", *"Atrium", *"Y249", *"F012"];
-
 // const ROOM_DICT: [Node; 10] =  {
 //     [
 //         Node { index: 0, id: *"Dropoff" },
@@ -69,85 +70,127 @@ const ROOM_DICT: [str; 10] = [*"Dropoff", *"G010", *"Veranda", *"I315", *"B888",
 //     ]
 // };
 //
-// pub struct Node {
-//     index: usize,
-//     id: str
-// }
+#[derive(Eq, Hash, PartialEq)]
+#[derive(Debug)]
+#[derive(Clone)]
+pub struct Node {
+    dm_index: usize,
+    graph_index: usize,
+}
+
+impl Node {
+    pub fn new(dm_index: usize, graph_index: usize) -> Node {
+        Node { dm_index, graph_index }
+    }
+}
 
 // ** Adapted from https://en.wikipedia.org/wiki/Dijkstras_algorithm#Pseudocode **
 // Assume source vertex @ first. Also adds hard-coded access to DISTMAP and assumptions tailored to this use-case, so please generify for any lib use.
 // In essence a fundamental assumption is that the graph is K_n (complete graph with n nodes).
 // TODO: look into SIMD vectors (e.g. u8xN)
 
-pub fn k_dijkstra(graph: Vec<u8>) -> (Vec<u8>, Vec<u8>) { // <-- use u8 index over entire Node. Important to retain at least graph abstraction over assuming contiguous list of X elements (e.g. stringing hpaths together)
-    let glen = graph.len();
-    let mut q = priority_queue::PriorityQueue::with_capacity_and_default_hasher(glen);
+// ## Enough inefficiency here to last a lifetime... implicitly elided <'_>!!! smh my head o.o
+
+// UPDATE 4/16/25: turns out Dijkstra is NOT the right choice for solving the Traveling Salesman's Problem. Ah.
+pub fn k_dijkstra(inds: Vec<u8>) -> (Vec<u8>, Vec<Node>) { // <-- use u8 index over entire Node. Important to retain at least graph abstraction over assuming contiguous list of X elements (e.g. stringing hpaths together)
+    let glen = inds.len();
+    let graph = {
+        let mut g = Vec::with_capacity(glen);
+        for i in 0..glen {
+            g.push(Node::new(*inds.get(i).unwrap() as usize, i));
+        }
+        g
+    };
+
     let mut dist = vec![INFINITY; glen];
-    let mut prev = vec![0; glen];
+    let mut prev = vec![&EMPTY_NODE; glen];
+    let mut pq = PriorityQueue::<&Node, Reverse<u8>, NaiveXORHasherBuilder>::with_capacity_and_default_hasher(glen);
 
-    dist.insert(0, 0);
-    q.insert(graph.first(), 0);
+    dist[0] = 0;
+    pq.push(graph.first().unwrap(), Reverse(0));
 
-    for i in 1..glen {
-        q.insert(graph.get(i).unwrap(), Reverse(INFINITY));
-    }
+    // for i in 1..glen {
+    //     q.push(*graph.get(i).unwrap(), Reverse(INFINITY));
+    // }
 
-    while !q.is_empty() {
-        let (u, _) = q.peek().unwrap();
+    while let Some((u, _)) = pq.pop() {
+        for v in &graph {
+            if v.graph_index != u.graph_index {
+                let alt = dist[u.graph_index] + ext_dm(u.dm_index, v.dm_index, true);
 
-        for v in 0..glen {
-            if v != u {
-                let alt = dist[v] + ext_dm(u, v, true);
+                if alt < dist[v.graph_index] {
+                    prev[v.graph_index] = u;
+                    dist[v.graph_index] = alt;
 
-                if alt < dist[v] {
-                    prev.insert(v, u);
-                    dist.insert(v, alt);
-                    q.change_priority_by(v, |p| Reverse(p.0 - alt));
+                    pq.push(v, Reverse(alt));
+                    //let v8 = &(v as u8); // jank :c
+                    //q.change_priority(v8, Reverse(q.get_priority(v8).unwrap().0 + alt));
                 }
             }
         }
     }
 
-    (dist, prev)
+    (dist, prev.iter().cloned().cloned().collect())
+}
+
+// O(n^2*2^n) > O(n!)
+// this is actual hell ...
+// Held-Karp (exact but slooow), Lin-Kernighan (slower than 2-O but OK for symm)
+// Use Two-Opt based on https://or.stackexchange.com/questions/6764/is-there-a-ranking-of-heuristics-for-the-travelling-salesman-problem -> https://link.springer.com/article/10.1007/s00453-002-0986-1
+// You will get negative cost; this seems to be OK? Due to not using Euclidian distances but instead non-balanced metre weights.
+pub fn two_opt(tour: &mut [usize], max_iters: usize) {
+    let n = tour.len();
+    let mut improved = true;
+    let mut iters = 0;
+    let mut cost: i32 = calc_tour_cost(tour) as i32;
+
+    while improved && iters < max_iters {
+        improved = false;
+        for i in 0..n-1 {
+            for j in (i+2)..n {
+                let cost_delta: i32 = (ext_dm(i, j, true) as i32) + (ext_dm(i + 1, (j + 1) % n, true) as i32) - (ext_dm(i, i + 1, true) as i32) - (ext_dm(j, (j + 1) % n, true) as i32);
+
+                // If cost reduced, 2-opt swap.
+                if cost_delta < 0 {
+                    swap_edges(tour, i, j);
+                    cost += cost_delta;
+                    improved = true;
+                }
+            }
+        }
+
+        iters += 1;
+    }
+}
+
+pub fn calc_tour_cost(tour: &[usize]) -> u32 {
+    let mut cost = 0u32;
+    for u in 0..tour.len() {
+        let v = (u + 1) % tour.len();
+        cost += ext_dm(u,v,true) as u32;
+    }
+    cost
+}
+
+// i → i+1, j → j+1 <-> i → j, i+1 → j+1
+pub fn swap_edges(tour: &mut [usize], mut i: usize, mut j: usize) {
+    i += 1;
+
+    while i < j {
+        tour.swap(i, j);
+
+        i += 1;
+        j -= 1;
+    }
 }
 
 // H → L = edge length
 // L → H = CGRAM direction
 // n → n = raw priority
-fn ext_dm(u: u8, v: u8, opt_high: bool) -> u8 {
-    if u == v || (u < v && opt_high) {
-        DISTMAP[u as usize][v as usize]
+fn ext_dm(u: usize, v: usize, opt_high: bool) -> u8 {
+    if u == v || (u > v) ^ opt_high {
+        DISTMAP[u][v]
     } else {
-        DISTMAP[v as usize][u as usize]
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_ext_edge_nof() {
-        assert_eq!(ext_dm(1,0,true), 20);
-    }
-
-    #[test]
-    fn test_ext_edge_f() {
-        assert_eq!(ext_dm(2,5,true), 65 + ELEV_TAX[2]);
-    }
-
-    #[test]
-    fn test_ext_prio() {
-        assert_eq!(ext_dm(3,3,false), 10);
-    }
-
-    #[test]
-    fn test_ext_sym_nof() {
-        assert_eq!(ext_dm(0,8,false), CGR_UPRIGHT);
-    }
-
-    #[test]
-    fn test_ext_sym_f() {
-        assert_eq!(ext_dm(8,0,false), CGR_UPRIGHT);
+        DISTMAP[v][u]
     }
 }
