@@ -1,3 +1,4 @@
+use alloc::format;
 use alloc::rc::Rc;
 use alloc::vec::Vec;
 use core::cell::RefCell;
@@ -92,21 +93,39 @@ const CGRAM_DOWN_RIGHT: [[u8; 5]; 8] = {
     ]
 };
 
+pub enum MarqueStyle {
+    SoloHighL,
+    SoloHighR,
+    SoloLowL,
+    SoloLowR,
+    SyncLeft,
+    SyncRight,
+    GearLeft,
+    GearRight
+}
+
 pub struct Lcd1602 {
     rs: Pin<Output>,
     rw: Pin<Output>,
     en: Pin<Output>,
     db: [Pin<Output>; 8],// ← NOTE... little endian (0-7)
-    serial: Rc<RefCell<Usart<USART0, Pin<Input, PE0>, Pin<Output, PE1>>>>,
-    mapper: FcHashMap<char, u8, 256>,
+    pub(crate) serial: Usart<USART0, Pin<Input, PE0>, Pin<Output, PE1>>,
+    pub(crate) mapper: FcHashMap<char, u8, 256>,
     anchor: u8, // TODO: account for EMS S = 0.
     overcast: u8
 }
 
 impl Lcd1602 {
-    pub fn new(rs: Pin<Output>, rw: Pin<Output>, en: Pin<Output>, db: [Pin<Output>; 8], serial: Rc<RefCell<Usart<USART0, Pin<Input, PE0>, Pin<Output, PE1>>>>) -> Lcd1602 {
+    pub fn new(rs: Pin<Output>, rw: Pin<Output>, en: Pin<Output>, db: [Pin<Output>; 8], serial: Usart<USART0, Pin<Input, PE0>, Pin<Output, PE1>>) -> Lcd1602 {
         Self { rs, rw, en, db, serial, mapper: {
             let mut fhm = FcHashMap::new();
+            fhm.insert('↑', 0b1111_1111).unwrap(); // TODO UPDATE WITH CGRAM SYMBOLS WHEN IMPLEMENTED
+            fhm.insert('↓', 0b1111_1111).unwrap();
+            fhm.insert('↖', 0b1111_1111).unwrap();
+            fhm.insert('↗', 0b1111_1111).unwrap();
+            fhm.insert('↘', 0b1111_1111).unwrap();
+            fhm.insert('↙', 0b1111_1111).unwrap();
+
             fhm.insert('▓', 0b1111_1111).unwrap();
             fhm.insert('"', 0b0010_0010).unwrap();
             fhm.insert('!', 0b0010_0001).unwrap(); // ← Based on JIS X 0201 with JIS X 0208 mappings for ktk
@@ -319,19 +338,19 @@ impl Lcd1602 {
     }
 
     pub fn register(&mut self, mut byte: u8) { // ← write to DB register
-       // ufmt::uwriteln!(&mut self.serial, "REGISTERING {:?}", bits8(byte));
+       ufmt::uwriteln!(&mut self.serial, "REGISTERING {:?}", bits8(byte));
         for i in 0..8 {
             let dbi = &mut self.db[i];
             dbi.set_state(PinState::from(byte & 0x1 == 1)).expect("Could not set register pin state");
             byte >>= 1;
-          //  ufmt::uwriteln!(&mut self.serial, "REGUPD {:?}", bits8(byte));
+           // ufmt::uwriteln!(&mut self.serial, "REGUPD {:?}", bits8(byte));
         }
     }
 
     pub fn check(&mut self) {
         let binding = self.db.iter().map(|p| u8::from(p.is_set_high())).rev().collect::<Vec<_>>();
         let ps: &[u8] = binding.as_slice();
-        ufmt::uwriteln!(*Rc::get_mut(&mut self.serial).unwrap().borrow_mut(), "CHK: {} {} / {:?}\n", u8::from(self.rs.is_set_high()), u8::from(self.rw.is_set_high()), ps);
+       ufmt::uwriteln!(&mut self.serial, "CHK: {} {} / {:?}\n", u8::from(self.rs.is_set_high()), u8::from(self.rw.is_set_high()), ps);
     }
 
     pub fn dbx<R: RangeBounds<usize> + core::slice::SliceIndex<[Pin<Output, Dynamic>], Output = [Pin<Output, Dynamic>]>>(&mut self, i: R) -> u8 { // ← utility for bitmasking ith register value. Range to save accesses if several needed.
@@ -355,7 +374,7 @@ impl Lcd1602 {
         arduino_hal::delay_us(1);
         self.en.set_low();
         arduino_hal::delay_us(1);
-        ufmt::uwriteln!(*Rc::get_mut(&mut self.serial).unwrap().borrow_mut(), "ENP OK");
+       ufmt::uwriteln!(&mut self.serial, "ENP OK");
     }
 
     pub fn enp_then_bus(&mut self) {
@@ -369,7 +388,7 @@ impl Lcd1602 {
     }
 
     pub fn cmb(&mut self, reg: &u16) { // cmd with no busing
-        ufmt::uwriteln!(*Rc::get_mut(&mut self.serial).unwrap().borrow_mut(), "CMD: {} {} / {:?}", (reg >> 9) & 0b1u16, (reg >> 8) & 0b1u16, bits8((reg & 0xFF) as u8));
+        ufmt::uwriteln!(&mut self.serial, "CMD: {} {} / {:?}", (reg >> 9) & 0b1u16, (reg >> 8) & 0b1u16, bits8((reg & 0xFF) as u8));
         self.register((reg & 0b00_1111_1111) as u8);
         self.rw.set_state(PinState::from((reg & 0b01_0000_0000) != 0)).expect("Could not set register pin state");
         self.rs.set_state(PinState::from((reg & 0b10_0000_0000) != 0)).expect("Could not set register pin state");
@@ -387,13 +406,11 @@ impl Lcd1602 {
 
     pub fn clr(&mut self) { // ← screen clear
         self.cmd(&0b00_0000_0001);
-        self.anchor = 0;
     }
 
     pub fn ret(&mut self) { // ← cursor return
         let bits = &(0b00_0000_0010 | (self.dbx(0..=0) as u16));
         self.cmd(bits);
-        self.anchor = 0;
     }
 
     pub fn ems(&mut self, id: bool, s: bool) { // ← entry mode set
@@ -419,14 +436,13 @@ impl Lcd1602 {
     }
 
     pub fn dds(&mut self, addr: u8) { // ← DDRAM set address
-        self.cmd(&(0b00_1000_0000 | (addr as u16) & 0b00_0111_1111));
-        self.anchor = addr;
+        self.cmb(&(0b00_1000_0000 | (addr as u16) & 0b00_0111_1111));
+        arduino_hal::delay_us(70);
     }
 
     pub fn dtw(&mut self, data: u8) { // ← Data write (cgs/dds 1st!)
         self.cmb(&(0b10_0000_0000 | (data as u16))); // Froze on busing, so manual delay override.
         arduino_hal::delay_us(70);
-        self.anchor += 1;
     }
 
     pub fn dtr(&mut self) -> u8 { // ← Data read (cgs/dds 1st!)
@@ -468,12 +484,105 @@ impl Lcd1602 {
         self.cmd(&0b00_0000_0001); // Display clear
         self.cmd(&0b00_0000_0111); // I/D=inc, S=shift
 
-        ufmt::uwriteln!(*Rc::get_mut(&mut self.serial).unwrap().borrow_mut(), "\n\nInitialised.\n\n");
+       ufmt::uwriteln!(&mut self.serial, "\n\nInitialised.\n\n");
     }
 
+    pub fn affix(&mut self, row: u8, str: &str) { // heckin' keep calling things affix lul (lovely word)
+        let dd_addr = match row {
+            0 => 0x00,
+            1 => 0x40,
+            _ => 0x00
+        };
 
-    pub fn disp_str(&mut self, str: &str) {
-        for c in str.chars() {
+        self.dds(dd_addr);
+        self.disp_str(str);
+    }
+
+    pub fn marque(&mut self, iters: u8, graceful: bool) {
+        // 40 chars per line
+        for _ in 0..iters {
+            for i in 0..42 {
+                match i {
+                    0 | 42 => {
+                        if graceful {
+                            arduino_hal::delay_ms(1000);
+                        }
+                    }
+
+                    _ => {
+                        self.cds(true, true);
+                        arduino_hal::delay_ms(200);
+                    }
+                }
+            }
+        }
+    }
+
+    pub fn demo(&mut self, row0: &str, row1: &str, iters: u8, graceful: bool) {
+        self.clr();
+        self.affix(0, row0);
+        self.affix(1, row1);
+        self.marque(iters, graceful);
+    }
+
+    //                                                                                                             * ! **
+    pub fn amarque(&mut self, iters: u8, style: MarqueStyle, fixstr: &str) {  // imaginary words, in my code??!! o.o
+        for _ in 0..iters {
+            for i in 0..42 {
+                match style {
+                    MarqueStyle::SoloHighR => {
+                        self.cds(true, true);
+                        self.affix(1, fixstr);
+                        arduino_hal::delay_ms(130);
+                    }
+
+                    _ => {}
+                }
+            }
+        }
+    }
+
+    // pub fn ls(&mut self, row: u8, rightward: bool) {  // Line shift
+    //     let offset = row * 0x40; // Row is either 0 or 1
+    //     let mut temp = 0u8;
+    //
+    //     if rightward {
+    //         let mut prev = {
+    //             self.dds(offset + 0x27);
+    //             self.dtr()
+    //         };
+    //
+    //         for i in offset..=(offset + 0x27) {
+    //             temp = {
+    //                 self.dds(i);
+    //                 self.dtr()
+    //             };
+    //
+    //             self.dtw(prev);
+    //             prev = temp;
+    //         }
+    //     } else {
+    //         let mut prev = {
+    //             self.dds(offset + 1);
+    //             self.dtr()
+    //         };
+    //
+    //         for i in offset..=(offset + 0x27) {
+    //             let oi = (offset + 0x27) - i;
+    //
+    //             temp = {
+    //                 self.dds(oi);
+    //                 self.dtr()
+    //             };
+    //
+    //             self.dtw(prev);
+    //             prev = temp;
+    //         }
+    //     }
+    // }
+
+pub fn disp_str(&mut self, str: &str) {
+    for c in str.chars() {
             self.disp_char(c);
         }
     }
@@ -483,9 +592,8 @@ impl Lcd1602 {
 
         if map.is_some() {
             self.disp_sym(*map.unwrap_or_else(|| &0b1111_1111));
-            self.anchor += 1;
         } else {
-            ufmt::uwriteln!(*Rc::get_mut(&mut self.serial).unwrap().borrow_mut(), "NOMAP => {}", c);
+        ufmt::uwriteln!(&mut self.serial, "NOMAP => {}", c);
         }
     }
 
@@ -541,7 +649,31 @@ impl Lcd1602 {
             arduino_hal::delay_ms(ms);
         }
     }
+
+    pub fn timer(&mut self, msg: &str, duration: u16) {
+        let mut bomb = duration;
+        let mut blink = true;
+        while bomb > 0 {
+            self.disp_str(&*format!("{:02}", bomb / 60));
+
+            let blc = if blink { ':' } else { ' ' };
+            blink = !blink;
+            self.disp_char(blc);
+
+            self.disp_str(&*format!("{:02}", bomb % 60));
+
+            bomb -= 1;
+
+            self.affix(1, msg);
+            self.dds(0);
+
+            arduino_hal::delay_ms(670);
+        }
+    }
+
+    // pub fn map_str(str: &str) -> [u8; ]
 }
+
 
 
 

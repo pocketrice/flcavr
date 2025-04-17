@@ -10,19 +10,19 @@ mod bitops;
 mod datmgt;
 mod hash;
 
-use crate::datmgt::EntryManager;
-use crate::lcd1602::Lcd1602;
-use alloc::format;
-use alloc::rc::Rc;
-use core::cell::RefCell;
+use crate::lcd1602::{Lcd1602, MarqueStyle};
+use alloc::{format, vec};
+use alloc::vec::Vec;
+use arduino_hal::Eeprom;
 use arduino_hal::port::mode::Output;
 use arduino_hal::port::Pin;
 use arduino_hal::prelude::_unwrap_infallible_UnwrapInfallible;
-use arduino_hal::Eeprom;
 use embedded_alloc::LlffHeap as Heap;
 use embedded_hal::digital::OutputPin;
-
 use panic_halt as _;
+use crate::datmgt::EntryManager;
+use crate::gsearch::two_opt;
+
 // use panic_halt as _;
 #[global_allocator]
 static HEAP: Heap = Heap::empty();
@@ -68,7 +68,7 @@ fn main() -> ! {
 
     let dp = arduino_hal::Peripherals::take().unwrap();
     let pins = arduino_hal::pins!(dp);
-    let mut serial = Rc::new(RefCell::new(arduino_hal::default_serial!(dp, pins, 57600)));
+    let mut serial = arduino_hal::default_serial!(dp, pins, 57600);
 
     /*
      * For examples (and inspiration), head to
@@ -79,6 +79,8 @@ fn main() -> ! {
      * for a different board can be adapted for yours.  The Arduino Uno currently has the most
      * examples available.
      */
+
+    let TEST_A = 2;
 
     let rs: Pin<Output> = pins.d10.into_output().downgrade();
     let rw: Pin<Output> = pins.d11.into_output().downgrade();
@@ -93,46 +95,122 @@ fn main() -> ! {
     let db6: Pin<Output> = pins.d8.into_output().downgrade();
     let db7: Pin<Output> = pins.d9.into_output().downgrade();
 
-    let mut lcd = Lcd1602::new(rs, rw, en, [db0, db1, db2, db3, db4, db5, db6, db7], Rc::clone(&serial));
-    //let mut emgr: EntryManager = EntryManager::new(Eeprom::new(dp.EEPROM), Rc::clone(&serial));
-   // emgr.load_sample();
+    let mut lcd = Lcd1602::new(rs, rw, en, [db0, db1, db2, db3, db4, db5, db6, db7], serial);
+    let mut emgr: EntryManager = EntryManager::new(Eeprom::new(dp.EEPROM));
+    emgr.load_sample(&lcd.mapper);
+
 
     lcd.init();
     lcd.cmd(&0b00_0011_1000);
     lcd.cmd(&0b00_0000_1100);
     lcd.cmd(&0b00_0000_0110);
-    // lcd.disp_str("Ample chamomile and honey, omit lavender. B12 → C40. ▓▓▓ KEEP WARM, ALLERGEN ▓\
-    // ▓▓");
 
+    if TEST_A == 0 {
+        let mut tour = vec![0, 1, 2, 6, 9];
+        two_opt(&mut tour, 10);
 
-    //lcd.disp_symv(vec![0b0011_0000, 0b0011_0001, 0b0011_1010, 0b0011_1000, 0b0011_0100]);
+        let stour = &format!("{:?}", tour);
+        lcd.demo("** PATH FOUND **", stour, 2, true);
 
-    //lcd.disp_symv(vec![0b0111_0111u8, 0b0110_1111u8, 0b0111_1010u8, 0b1110_1111u8, 0b1111_1111u8, 0b1111_1010u8]);
-
-    let mut bomb = 300u16;
-    let mut blink = true;
-    while bomb > 0 {
+        arduino_hal::delay_ms(400);
+        //
+        // lcd.clr();
+        // lcd.affix(0, "initializing. . .");
+        // lcd.affix(1, "▓▓");
+        // arduino_hal::delay_ms(300);
+        // lcd.affix(1, "▓▓ ▓▓");
+        // arduino_hal::delay_ms(300);
+        // lcd.affix(1, "▓▓ ▓▓ ▓▓");
+        // arduino_hal::delay_ms(300);
+        // lcd.affix(1, "▓▓ ▓▓ ▓▓ ▓▓");
+        // arduino_hal::delay_ms(300);
+        // lcd.affix(1, "▓▓ ▓▓ ▓▓ ▓▓ ▓▓");
+        // arduino_hal::delay_ms(300);
         lcd.clr();
-        lcd.disp_str(&*format!("{:02}", bomb / 60));
+        lcd.affix(0, "Init OK!");
+        lcd.affix(1, "Reading predat 1");
+        arduino_hal::delay_ms(2000);
 
-        let blc = if blink { ':' } else { ' ' };
-        blink = !blink;
-        lcd.disp_char(blc);
+        let (dictname, desc, cgrsym, dist) = emgr.read_pre(0, 1);
 
-        lcd.disp_str(&*format!("{:02}", bomb % 60));
+        lcd.clr();
+        lcd.disp_sym(cgrsym);
+        lcd.disp_str(&format!(" {}m to {}", dist, dictname));
+        lcd.dds(0x40);
+        lcd.disp_symv(Vec::from(desc));
+        lcd.marque(3, true);
+        //
+        arduino_hal::delay_ms(4000);
+        // lcd.demo("Transmuting predat 1", "Writing postdat 1", 0, false);
+        // arduino_hal::delay_ms(1000);
+        //
+        //
+        lcd.demo("Thank you.", "Insert demo B.", 0, false)
+    } else if TEST_A == 1 {
+        lcd.affix(0, "Test EEPROM @ 0x0");
+        lcd.marque(1, false);
+        lcd.dds(0x40);
+        for i in 0..256 {
+            lcd.disp_str(&format!("{}", emgr.eepread(i)));
+        }
+        lcd.clr();
+        lcd.affix(0, "predat OK");
+        arduino_hal::delay_ms(2000);
 
-        bomb -= 1;
+        lcd.affix(0, "Test EEPROM @ 0xC00");
+        lcd.marque(1, false);
+        lcd.dds(0x40);
+        for i in 0xC00..(0xC00 + 8) {
+            lcd.disp_str(&format!("{}", emgr.eepread(i)));
+            arduino_hal::delay_ms(100);
+        }
+        lcd.clr();
+        lcd.affix(0, "postdat OK");
+        arduino_hal::delay_ms(2000);
+        lcd.clr();
+        lcd.demo("Thank you.", "Insert demo C.", 0, false)
+    } else {
+        lcd.timer("PREPARE TO TEST", 30u16);
+        lcd.clr();
+        lcd.timer("check current! →", 120u16);
 
-        arduino_hal::delay_ms(800);
+        lcd.clr();
+        lcd.disp_str("DEMO COMPLETE!       DEMO COMPLETE!");
+        lcd.marquee(400);
     }
 
-    lcd.clr();
-    lcd.disp_str("HAPPY NEW YEAR");
-    lcd.marquee(400);
 
+    // lcd.disp_str("Ample chamomile and honey, omit lavender. B12 → C40. ▓▓▓ KEEP WARM, ALLERGEN ▓\
+        // ▓▓");
+
+
+        //lcd.disp_symv(vec![0b0011_0000, 0b0011_0001, 0b0011_1010, 0b0011_1000, 0b0011_0100]);
+
+        //lcd.disp_symv(vec![0b0111_0111u8, 0b0110_1111u8, 0b0111_1010u8, 0b1110_1111u8, 0b1111_1111u8, 0b1111_1010u8]);
+        //
+        // let mut bomb = 300u16;
+        // let mut blink = true;
+        // while bomb > 0 {
+        //     lcd.clr();
+        //     lcd.disp_str(&*format!("{:02}", bomb / 60));
+        //
+        //     let blc = if blink { ':' } else { ' ' };
+        //     blink = !blink;
+        //     lcd.disp_char(blc);
+        //
+        //     lcd.disp_str(&*format!("{:02}", bomb % 60));
+        //
+        //     bomb -= 1;
+        //
+        //     arduino_hal::delay_ms(800);
+        // }
+        //
+        // lcd.clr();
+        // lcd.disp_str("HAPPY NEW YEAR");
+        // lcd.marquee(400);
    // lcd.marquee(600);
     loop {
-        ufmt::uwriteln!(*Rc::get_mut(&mut serial).unwrap().borrow_mut(), "OK...\r").unwrap_infallible();
+       // ufmt::uwriteln!(&mut serial, "OK...\r").unwrap_infallible();
         arduino_hal::delay_ms(5000);
     }
 

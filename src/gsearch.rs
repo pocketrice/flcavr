@@ -185,11 +185,29 @@ pub fn swap_edges(tour: &mut [usize], mut i: usize, mut j: usize) {
 }
 
 // H → L = edge length
-// L → H = CGRAM direction
+// L → H = CGRAM direction; if uv swapped then also swap dir
 // n → n = raw priority
-fn ext_dm(u: usize, v: usize, opt_high: bool) -> u8 {
+pub fn ext_dm(u: usize, v: usize, opt_high: bool) -> u8 {
     if u == v || (u > v) ^ opt_high {
-        DISTMAP[u][v]
+        if !opt_high { // TODO unbranch this (just for flipping dir symbol on opt_low)
+            let sym = DISTMAP[u][v];
+
+            match sym {
+                CGR_UP => CGR_DOWN,
+                CGR_DOWN => CGR_UP,
+                CGR_RIGHT => CGR_LEFT,
+                CGR_LEFT => CGR_RIGHT,
+                CGR_UPRIGHT => CGR_DOWNLEFT,
+                CGR_DOWNLEFT => CGR_UPRIGHT,
+                CGR_UPLEFT => CGR_DOWNRIGHT,
+                CGR_DOWNRIGHT => CGR_UPLEFT,
+                _ => 0b1111_1111
+            }
+
+        } else {
+            DISTMAP[u][v]
+        }
+
     } else {
         DISTMAP[v][u]
     }
