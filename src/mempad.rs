@@ -7,5 +7,5 @@ pub struct Mempad {
 }
 
 fn blocking_read() {
-
+    let curr = ab[0].bxor(db.iter().flush());
 }
