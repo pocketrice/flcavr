@@ -134,7 +134,7 @@ pub fn k_dijkstra(inds: Vec<u8>) -> (Vec<u8>, Vec<Node>) { // <-- use u8 index o
 }
 
 // O(n^2*2^n) > O(n!)
-// this is actual hell ...
+
 // Held-Karp (exact but slooow), Lin-Kernighan (slower than 2-O but OK for symm)
 // Use Two-Opt based on https://or.stackexchange.com/questions/6764/is-there-a-ranking-of-heuristics-for-the-travelling-salesman-problem -> https://link.springer.com/article/10.1007/s00453-002-0986-1
 // You will get negative cost; this seems to be OK? Due to not using Euclidian distances but instead non-balanced metre weights.
@@ -148,7 +148,10 @@ pub fn two_opt(tour: &mut [usize], max_iters: usize) {
         improved = false;
         for i in 0..n-1 {
             for j in (i+2)..n {
-                let cost_delta: i32 = (ext_dm(i, j, true) as i32) + (ext_dm(i + 1, (j + 1) % n, true) as i32) - (ext_dm(i, i + 1, true) as i32) - (ext_dm(j, (j + 1) % n, true) as i32);
+                let cost_delta: i32 = (ext_dm(i, j, true) as i32)
+                    + (ext_dm(i + 1, (j + 1) % n, true) as i32)
+                    - (ext_dm(i, i + 1, true) as i32)
+                    - (ext_dm(j, (j + 1) % n, true) as i32);
 
                 // If cost reduced, 2-opt swap.
                 if cost_delta < 0 {

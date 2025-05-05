@@ -181,6 +181,7 @@ dependencies = [
  "embedded-alloc",
  "embedded-hal 1.0.0",
  "fchashmap",
+ "nb 1.1.0",
  "panic-halt",
  "priority-queue",
  "ufmt",
